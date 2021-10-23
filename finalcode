@@ -1,0 +1,471 @@
+	/*******************************************************************************
+ * File Name          : Automatic_Sliding_Door.c
+ * Description        : this program turn on PWM in Timer1 to controol the speed
+ * of dc motor. this DC motor with some mechanical arrangemant
+ *                      will help door to slide.
+ 
+ ******************************************************************************
+ */
+
+/* Includes----- */
+#include <stdio.h>
+#include <stdint.h>
+#include <ctype.h>
+#include <string.h>
+#include "common.h"
+#include "main.h"
+
+TIM_HandleTypeDef tim1; // to run the DC motor
+TIM_HandleTypeDef tim17; // to provide delay
+
+int16_t speed;
+int32_t delay;
+int16_t PB = 1;
+
+//Function declaration
+void gpio_init_RGB(); // Gpio Init for RGB LED and Enable pin of ic
+void gpio_init_Switch();// gpio for switch
+void gpio_init_DCMotor(); //PWM init for DC motor
+void timer_init_DCMotor(uint16_t); //Timer init for DC motor
+void timer_init_Delay();// timer init for delay function
+void start_DCMotor(uint16_t,uint16_t); // to start PWM
+void stop_DCMotor(uint16_t); // to stop PWM
+void RGB(int red, int green, int blue); //to contol RGB LED
+void Delay(int32_t delay); // delay function
+
+//timer 6 peripheral register declaration
+uint32_t *ptrcr1 = (uint32_t *) 0x40001000 ;//pointer to control register 1
+uint32_t *ptrdier = (uint32_t *) 0x4000100c ;//pointer to DIER register
+uint32_t *ptrsr = (uint32_t *) 0x40001010 ; //pointer to STATUS REGISTER
+uint32_t *ptrpre = (uint32_t *) 0x40001028 ;//pointer to PRESCALER
+uint32_t *ptrarr = (uint32_t *) 0x4000102c ;//pointer to AUTO RELOAD REGISTER
+
+/*******************************************************************************
+ * Function Name      : timer_init
+ * Description        : This function will  initialize the timer 6 parameter.
+ *
+ * PARAMETERS         : N/A
+ *
+ * RETURNS            : N/A
+
+ ******************************************************************************
+ */
+void timer_init()
+{
+__HAL_RCC_TIM6_CLK_ENABLE();//enable clock to timer 6
+*ptrdier= 0x01;//enable interupt
+*ptrarr=0xffff;//initialize ARR register
+*ptrpre=0x1000;//initialize PRESCALER
+HAL_NVIC_EnableIRQ(54);//enable interupt in NVIC Register for timer 6
+}
+
+/*******************************************************************************
+ * Function Name      : CmddcInit
+ * Description        : This function will call functions to initialize gpio and timer.
+ *
+ * PARAMETERS         : int mode
+ *
+ * RETURNS            : CmdReturnOk
+ 
+ ******************************************************************************
+ */
+ParserReturnVal_t CmdDisable(int mode)
+{
+
+if (mode != CMD_INTERACTIVE)
+    return CmdReturnOk;
+
+       WDTFeed();
+       RGB(0,0,0);//turn off the RGB LED
+       stop_DCMotor(0);//stop motion of DCMmotor in forward direction
+       stop_DCMotor(4);//stop motion of DCMmotor in reverse direction
+       
+       WDTFeed();
+       *ptrsr=0x0;
+return CmdReturnOk;
+}
+ADD_CMD("Disable",CmdDisable,"   Disable the entire system")
+
+/*******************************************************************************
+ * Function Name      : CmdEnable
+ * Description        : This function will scane two argument delay and speed from user.
+ *                      According to enterd value the motor will change it's speed and delay
+ *                      and continuasly chen at the push button.                      
+ *
+ * PARAMETERS         : int mode
+ *
+ * RETURNS            : CmdReturnOk
+
+ ******************************************************************************
+ */
+ParserReturnVal_t CmdEnable(int mode)
+{
+               //variable initialization
+     
+      HAL_StatusTypeDef  rc;
+     
+         
+if (mode != CMD_INTERACTIVE)
+return CmdReturnOk;
+
+rc = fetch_int16_arg(&speed);// scan the value of spped
+if(rc != HAL_OK)
+{
+   printf("please enter speed in percantage !!!\n");//print the message
+   return CmdReturnOk;
+}
+
+                rc = fetch_int32_arg(&delay);// scan the value of delay
+                if(rc != HAL_OK)
+{
+   printf("please enter delay !!!\n");// print the message
+   return CmdReturnOk;
+}
+
+       speed = (speed * 32767)/100; //convert prtcentage to value
+       speed = 32768 - speed;  
+
+gpio_init_Switch(); //init gpio for switch
+        gpio_init_RGB();      //init gpio for RGB LED
+        gpio_init_DCMotor();  //init gpio for DC Motor
+        timer_init_Delay();   //init timer17 for delay
+        timer_init_DCMotor(0);//init timer1 chennal 1 for DC Motor
+        timer_init_DCMotor(4);//init timer1 channel 2 for DC Motor
+timer_init();
+*ptrcr1=0x1;
+
+ 
+return CmdReturnOk;
+}
+
+ADD_CMD("Enable",CmdEnable,"<speed> <delay>         Enable the System")
+
+/*******************************************************************************
+ * Function Name      : TIM6_DAC_IRQHandler
+ * Description        : This  handler is for timer 6 this will execute at every 100ms.
+ *                      this will turn on and off motor according to the status of GPIO pin
+ *                      and speed and delay will be provided by user.    
+ *
+ * PARAMETERS         : int mode
+ *
+ * RETURNS            : CmdReturnOk
+
+ ******************************************************************************
+ */
+void TIM6_DAC_IRQHandler(void)
+{
+                   *ptrsr=0x0;
+   
+  PB = HAL_GPIO_ReadPin(GPIOA,GPIO_PIN_12); // read GPIO PIN 12 of Port B where the push button is connected in pull up mode
+ 
+  WDTFeed();// reset watch dog timer
+ 
+  if(PB == 0)
+  {
+ 
+ /* run Motor In Forward Direction for 10 sec */  
+ RGB(0,1,1); //turn on the RGB LED with sky color
+ stop_DCMotor(0);//stop motion of DCMmotor in forward direction
+ stop_DCMotor(4);//stop motion of DCMmotor in reverse direction
+// HAL_GPIO_WritePin(GPIOB,GPIO_PIN_14,1); // Send 1 signal on enable pin of IC
+ start_DCMotor(0,speed); //start motion of DCMmotor in forward direction
+ 
+ Delay(delay);
+ 
+ /* stop motor for 10 sec */        
+         RGB(0,1,0); //turn on the RGB LED with green color
+ stop_DCMotor(0);//stop motion of DCMmotor in forward direction
+ stop_DCMotor(4);//stop motion of DCMmotor in reverse direction
+ HAL_GPIO_WritePin(GPIOB,GPIO_PIN_14,0);// Send 0 signal on enable pin of IC
+ 
+ Delay(delay);
+ 
+ /* run Motor In reverse Direction for 10 sec */
+ RGB(1,0,0); //turn on the RGB LED with red color
+ stop_DCMotor(0);//stop motion of DCMmotor in forward direction
+ stop_DCMotor(4);//stop motion of DCMmotor in reverse direction
+ //HAL_GPIO_WritePin(GPIOB,GPIO_PIN_14,1);// Send 1 signal on enable pin of IC
+ start_DCMotor(4,speed); //stop motion of DCMmotor in reverse direction
+ 
+ Delay(delay);
+ 
+ /* stop motor */
+ RGB(0,0,0); //turn off the RGB LED
+ stop_DCMotor(0);//stop motion of DCMmotor in forward direction
+ stop_DCMotor(4);//stop motion of DCMmotor in reverse direction
+// HAL_GPIO_WritePin(GPIOB,GPIO_PIN_14,0);// Send 0 signal on enable pin of IC
+  }
+ 
+  else
+ {
+        RGB(0,0,0); //turn off the RGB LED
+        stop_DCMotor(0);//stop motion of DCMmotor in forward direction
+stop_DCMotor(4);//stop motion of DCMmotor in reverse direction
+//HAL_GPIO_WritePin(GPIOB,GPIO_PIN_14,0); // Send 0 signal on enable pin of IC
+ }
+ 
+
+ WDTFeed();//reset watch dog timer
+
+}
+/*******************************************************************************
+ * Function Name      : timer_init_Delay
+ * Description        : This function will Initialise the timer 17.
+ *
+ * PARAMETERS         : N/A
+ *
+ * RETURNS            : N/A
+
+ ******************************************************************************
+ */
+void timer_init_Delay()
+{
+    __HAL_RCC_TIM17_CLK_ENABLE(); //enable clock for Timer 17
+
+tim17.Instance = TIM17;
+tim17.Init.Prescaler     = (HAL_RCC_GetPCLK2Freq() / 1000000) - 1; //set prescaler
+tim17.Init.CounterMode   = TIM_COUNTERMODE_UP; //set counter mode to up
+tim17.Init.Period        =     0xffff; // set period
+tim17.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+tim17.Init.RepetitionCounter = 0; // repetation counter
+HAL_TIM_Base_Init(&tim17);
+
+HAL_TIM_Base_Start(&tim17); // start timer
+}
+
+/*******************************************************************************
+ * Function Name      : Delay
+ * Description        : This function will provide delay in us.
+ *                      
+ *
+ * PARAMETERS         : delay
+ *
+ * RETURNS            : N/A
+ ******************************************************************************
+ */
+void Delay(int32_t delay)
+{
+   uint16_t timerVal;
+   
+   if (delay > 65535)
+{
+
+     while(delay > 65535)
+     {
+ TIM17->CNT = 0; //set timer register with 0
+
+ /* Reset counter */
+ while(TIM17->CNT < 65535)
+ {
+WDTFeed(); //watchdog timer feed function call
+asm volatile ("nop\n");
+ }
+ 
+ delay = delay-65535;
+
+      }
+   
+       timerVal = delay; //storing delayVal's data into timerVal variable
+       TIM17->CNT = 0; //set timer register with 0
+ 
+       /* Reset counter */
+       while(TIM17->CNT < timerVal)
+       {
+   WDTFeed(); //watchdog timer feed function call
+   asm volatile ("nop\n");
+       }
+ 
+       
+}
+
+else
+{
+              timerVal = delay; //storing delayVal's data into timerVal variable
+TIM17->CNT = 0;  //set timer register with 0
+   
+      /* Reset counter */
+while(TIM17->CNT < timerVal)
+{
+WDTFeed(); //watchdog timer feed function call
+asm volatile ("nop\n");
+}
+}
+}
+
+/*******************************************************************************
+ * Function Name      : RGB
+ * Description        : This function will turn on the specific color in  RGB LED
+ *                      as per the value in parameter.
+ *                      
+ *
+ * PARAMETERS         : red & green & blue
+ *
+ * RETURNS            : N/A
+ ******************************************************************************
+ */
+void RGB(int red, int green, int blue)
+{
+ 
+  HAL_GPIO_WritePin(GPIOB,GPIO_PIN_10,red); // send signal to R pin of RGB LED
+  HAL_GPIO_WritePin(GPIOB,GPIO_PIN_9,green);// send signal to R pin of RGB LED
+  HAL_GPIO_WritePin(GPIOB,GPIO_PIN_8,blue); // send signal to R pin of RGB LED
+   
+}
+
+/*******************************************************************************
+ * Function Name      : gpio_init_RGB
+ * Description        : This function will initialize the GPIO pin 8, 9 and 10 of port B.
+ *                      
+ *
+ * PARAMETERS         : N/A
+ *
+ * RETURNS            : N/A
+ ******************************************************************************
+ */
+void gpio_init_RGB()//function definition to initialize gpio pins
+{
+__HAL_RCC_GPIOB_CLK_ENABLE();//enable clock to the gpio peripheral
+
+GPIO_InitTypeDef GPIO_Init_Struct = {0};//typedef struct variable
+GPIO_Init_Struct.Pin = (GPIO_PIN_8 | GPIO_PIN_9 | GPIO_PIN_10);
+GPIO_Init_Struct.Pull = GPIO_NOPULL;
+GPIO_Init_Struct.Mode = GPIO_MODE_OUTPUT_PP;
+GPIO_Init_Struct.Speed = GPIO_SPEED_FREQ_HIGH;
+GPIO_Init_Struct.Alternate =0;
+
+HAL_GPIO_Init(GPIOB,&GPIO_Init_Struct);
+
+
+}
+
+/*******************************************************************************
+ * Function Name      : gpio_init_Switch
+ * Description        : This function will initialize the GPIO pin 12 of port A.
+ *                      
+ *
+ * PARAMETERS         : N/A
+ *
+ * RETURNS            : N/A
+  ******************************************************************************
+ */
+void gpio_init_Switch()//function definition to initialize gpio pins
+{
+
+__HAL_RCC_GPIOA_CLK_ENABLE();//enable clock to the gpio peripheral
+
+GPIO_InitTypeDef GPIO_Init_Struct = {0};//typedef struct variable
+GPIO_Init_Struct.Pin = GPIO_PIN_12;
+GPIO_Init_Struct.Pull = GPIO_NOPULL;
+GPIO_Init_Struct.Mode = GPIO_MODE_INPUT;
+GPIO_Init_Struct.Speed = GPIO_SPEED_FREQ_HIGH;
+GPIO_Init_Struct.Alternate =0;
+
+HAL_GPIO_Init(GPIOA,&GPIO_Init_Struct);
+}
+
+
+/*******************************************************************************
+ * Function Name      : gpio_init_DCMotor
+ * Description        : This function will initialize the GPIO pin 0 and 1 of
+ * port c for PWM.
+ *                      
+ *
+ * PARAMETERS         : N/A
+ *
+ * RETURNS            : N/A
+
+ ******************************************************************************
+ */
+void gpio_init_DCMotor()//function definition to initialize gpio pins
+{
+__HAL_RCC_GPIOC_CLK_ENABLE();//enable clock to the gpio peripheral
+
+GPIO_InitTypeDef GPIO_Init_Struct;//typedef struct variable
+GPIO_Init_Struct.Pin = GPIO_PIN_0 | GPIO_PIN_1;  
+GPIO_Init_Struct.Mode = GPIO_MODE_AF_PP;
+GPIO_Init_Struct.Speed = GPIO_SPEED_FREQ_HIGH;
+GPIO_Init_Struct.Alternate =GPIO_AF2_TIM1;
+
+HAL_GPIO_Init(GPIOC,&GPIO_Init_Struct);
+}
+
+/*******************************************************************************
+ * Function Name      : timer_init_DCMotor
+ * Description        : This function will initialize the timer 1 and configure
+ *                      the channel as per paramerter enterd.
+ *                      
+ *
+ * PARAMETERS         : timchannel
+ *
+ * RETURNS            : N/A
+ 
+ ******************************************************************************
+ */
+void timer_init_DCMotor(uint16_t timchannel)//function to initialize timer1 in pwm mode
+{
+__HAL_RCC_TIM1_CLK_ENABLE();//enalbe clock to timer1
+
+tim1.Instance=TIM1;//initialize to timer1 pointer
+tim1.Init.Prescaler=24;//set the prescaler
+tim1.Init.CounterMode=TIM_COUNTERMODE_UP;
+tim1.Init.Period=0xffff;//period is set to ffff
+tim1.Init.ClockDivision=TIM_CLOCKDIVISION_DIV1;
+tim1.Init.RepetitionCounter=0;//repition counter is set to 0
+
+HAL_TIM_PWM_Init(&tim1);//initilizer timer in pwm mode
+
+TIM_OC_InitTypeDef sconfig;//output compare mode
+
+sconfig.OCMode=TIM_OCMODE_PWM1;
+sconfig.Pulse=0;
+sconfig.OCPolarity=TIM_OCPOLARITY_HIGH;
+sconfig.OCNPolarity=TIM_OCNPOLARITY_LOW;
+sconfig.OCFastMode=TIM_OCFAST_DISABLE;
+sconfig.OCIdleState=TIM_OCIDLESTATE_RESET;
+sconfig.OCNIdleState=TIM_OCNIDLESTATE_RESET;
+
+HAL_TIM_PWM_ConfigChannel(&tim1,&sconfig,timchannel);//config outuput channel in pwm mode
+}
+
+/*******************************************************************************
+ * Function Name      : start_DCMotor
+ * Description        : This function will start pwm and load CCR resister of timer 1
+ *                      as per entered parameter ans the this value will control the speed.
+ *                      
+ *
+ * PARAMETERS         : timchannel & speed
+ *
+ * RETURNS            : N/A
+
+ ******************************************************************************
+ */
+void start_DCMotor(uint16_t timchannel,uint16_t speed)//function to start timer pwm
+{
+if(timchannel==0)
+{
+TIM1->CCR1=speed; //load register for channel 1
+}
+else
+{
+TIM1->CCR2=speed; //load register for channel 2
+}
+
+HAL_TIM_PWM_Start(&tim1,timchannel);//start pwm
+}
+
+/*******************************************************************************
+ * Function Name      : stop_DCMotor
+ * Description        : This function will stop timer.                      
+ *
+ * PARAMETERS         : timchannel
+ *
+ * RETURNS            : N/A
+ ******************************************************************************
+ */
+void stop_DCMotor(uint16_t timchannel)//functio to stop pwm timer
+{
+HAL_TIM_PWM_Stop(&tim1,timchannel);//stop PWM
+}
+ 	
+	
+
